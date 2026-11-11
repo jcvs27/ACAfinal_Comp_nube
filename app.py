@@ -28,7 +28,7 @@ def chunk_text(text, chunk_size=1000, overlap=100):
         start += (chunk_size - overlap)
     return chunks
 
-def get_embedding_with_retry(client, text_chunk, model='gemini-embedding-2-preview', max_retries=5, initial_delay=2):
+def get_embedding_with_retry(client, text_chunk, model='text-embedding-004', max_retries=5, initial_delay=2):
     """Obtains the vector embedding of a text chunk with Exponential Backoff."""
     delay = initial_delay
     for attempt in range(max_retries):
@@ -145,7 +145,7 @@ if 'processed_files' not in st.session_state:
 # --- SIDEBAR CONFIGURATION ---
 with st.sidebar:
     st.header("⚙️ Configuración del Sistema")
-    
+
     # Retrieve Gemini API Key safely
     gemini_key = st.text_input(
         "Clave de API de Gemini",
@@ -153,13 +153,13 @@ with st.sidebar:
         value=os.environ.get('GEMINI_API_KEY', ''),
         help="Ingrese su clave API de Gemini. Si ya está configurada en las variables de entorno, se usará automáticamente."
     )
-    
+
     # Select Generation Model
     model_options = ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-1.5-flash', 'gemini-1.5-pro']
     selected_model = st.selectbox("Modelo de Generación", model_options, index=0)
-    
+
     st.divider()
-    
+
     st.subheader("📂 Cargador de Documentos")
     uploaded_files = st.file_uploader(
         "Subir archivos PDF",
@@ -180,13 +180,13 @@ if client and uploaded_files:
         if uploaded_file.name not in st.session_state.processed_files:
             with st.sidebar:
                 with st.spinner(f"Procesando {uploaded_file.name}..."):
-                    st.session_state.vector_db.add_document(
+                     st.session_state.vector_db.add_document(
                         client=client,
                         file_name=uploaded_file.name,
                         file_content=uploaded_file
                     )
-                    st.session_state.processed_files.add(uploaded_file.name)
-                    st.success(f"✅ {uploaded_file.name} cargado con éxito!")
+                     st.session_state.processed_files.add(uploaded_file.name)
+                     st.success(f"✅ {uploaded_file.name} cargado con éxito!")
 
 # Show loaded documents status
 with st.sidebar:
@@ -214,7 +214,7 @@ if user_query := st.chat_input("Escriba su consulta basándose en los documentos
     # Display user query
     st.chat_message("user").markdown(user_query)
     st.session_state.chat_history.append({"role": "user", "content": user_query})
-    
+
     if not client:
         st.error("❌ API Key de Gemini requerida para responder.")
     elif len(st.session_state.vector_db.chunks) == 0:
@@ -237,7 +237,7 @@ if user_query := st.chat_input("Escriba su consulta basándose en los documentos
                         for i, source in enumerate(sources):
                             st.markdown(f"**Fragmento {i+1} - {source['metadata']['source']} (Similitud: {source['score']:.4f})**")
                             st.code(source['text'])
-                    
+
                     # Save to chat history
                     st.session_state.chat_history.append({
                         "role": "assistant",
