@@ -378,8 +378,8 @@ if 'uploader_names' not in st.session_state:        # ¿Existe el registro de lo
 # --- CONFIGURACIÓN DE LA BARRA LATERAL ---   # Marcador de sección
 with st.sidebar:                 # Todo lo indentado debajo se dibuja en la barra lateral
     st.header("⚙️ Configuración del Sistema")   # Encabezado de la barra lateral
-    motor_emb = f"local · {LOCAL_EMBEDDING_MODEL}" if MOTOR_EMBEDDINGS == "local" else EMBEDDING_MODEL   # Texto del motor activo
-    st.caption(f"🧠 Embeddings: {motor_emb}")   # Muestra qué motor está usando
+    motor_emb = "local (sin cuota)" if MOTOR_EMBEDDINGS == "local" else f"Gemini ({EMBEDDING_MODEL})"   # Texto del motor activo
+    st.caption(f"🧠 Índice: {motor_emb}")   # Muestra qué motor indexa (buscar en los PDFs)
     if EMBEDDING_BACKEND == "local" and MOTOR_EMBEDDINGS != "local":   # ¿Se pidió local pero no está instalado?
         st.warning("⚠️ Falta `sentence-transformers`: se usará Gemini (cuota limitada).")   # Aviso claro
 
@@ -415,7 +415,7 @@ with st.sidebar:                 # Todo lo indentado debajo se dibuja en la barr
         'gemini-3.5-flash',        # Otra versión flash
         'gemini-pro-latest',       # suele requerir facturación (429 en capa gratuita)   # Aviso de cuota
     ]                               # Cierra la lista
-    selected_model = st.selectbox("Modelo de Generación", model_options, index=0)   # Desplegable; index=0 = el primero
+    selected_model = st.selectbox("✍️ Modelo que redacta (Gemini)", model_options, index=0)   # Desplegable; index=0 = el primero
     custom_model = st.text_input(   # Campo opcional para escribir un modelo no listado
         "…o escribe otro modelo (opcional)",   # Etiqueta
         value="",                              # Empieza vacío
