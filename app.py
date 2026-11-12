@@ -143,6 +143,9 @@ def _motor_embeddings():         # Decide qué motor se usa realmente
 
 MOTOR_EMBEDDINGS = _motor_embeddings()   # Motor efectivo: "local" o "gemini"
 
+# Identificador del índice (motor + modelo): si cambia, el índice guardado ya no sirve.   # Evita reindexar
+MODELO_INDICE = f"{MOTOR_EMBEDDINGS}:{LOCAL_EMBEDDING_MODEL if MOTOR_EMBEDDINGS == 'local' else EMBEDDING_MODEL}"   # Mismo texto que guarda SimpleVectorDB
+
 def embed_local(texts):           # Calcula vectores con el modelo local
     """Vectores con el modelo local: sin API, sin cuota y sin límite de peticiones."""   # Docstring
     modelo = _cargar_modelo_local()   # Obtiene el modelo (cacheado)
@@ -207,7 +210,7 @@ class SimpleVectorDB:   # Clase que agrupa fragmentos, vectores y metadatos
         self.chunks = []           # Lista de fragmentos de texto (strings)
         self.embeddings = []       # Lista de vectores; el índice i corresponde al chunk i
         self.metadata = []         # Lista de diccionarios {source, chunk_id} en el mismo orden
-        self.model = f"{MOTOR_EMBEDDINGS}:{LOCAL_EMBEDDING_MODEL if MOTOR_EMBEDDINGS == 'local' else EMBEDDING_MODEL}"   # Motor+modelo: si cambia, el índice se invalida
+        self.model = MODELO_INDICE   # Motor+modelo: si cambia, el índice se invalida
 
     def clear(self):               # Vacía la base de datos entera
         self.chunks = []           # Borra los textos
@@ -358,7 +361,7 @@ if 'processed_files' not in st.session_state:   # ¿Ya existe la clave 'processe
     st.session_state.processed_files = set()    # No: créala como conjunto vacío (nombres de PDFs ya indexados)
 if 'vector_db' not in st.session_state:         # ¿Ya existe la base de datos vectorial?
     st.session_state.vector_db = SimpleVectorDB()   # No: créala
-elif getattr(st.session_state.vector_db, "model", None) != EMBEDDING_MODEL:   # Sí existe, ¿pero con otro modelo?
+elif getattr(st.session_state.vector_db, "model", None) != MODELO_INDICE:   # Sí existe, ¿pero con otro modelo?
     # Índice creado con otro modelo de embeddings: los vectores no son comparables.   # Explicación del caso
     st.session_state.vector_db = SimpleVectorDB()   # Lo descarta y crea uno nuevo
     st.session_state.processed_files = set()         # Y olvida qué archivos estaban indexados
