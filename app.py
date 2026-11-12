@@ -41,6 +41,12 @@ EMBEDDING_BATCH_SIZE = 20         # Textos por petición: lotes pequeños para n
 # Cada texto del lote cuenta como una petición, así que hay que espaciarlas.   # Por eso no se manda todo de golpe
 EMBEDDING_RPM = 80                # 80 < 100: margen de seguridad sobre el límite real del Free Tier
 
+# Motor de embeddings:   # Se elige con una sola constante
+#   "local"  -> modelo local (sin cuota ni API); requiere sentence-transformers   # Opción recomendada
+#   "gemini" -> API de Gemini (nivel gratuito: ~100 peticiones/minuto)            # Opción con cuota
+EMBEDDING_BACKEND = "local"       # "local" o "gemini"
+LOCAL_EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"   # Multilingüe, 384 dims
+
 # Tamaño máximo por archivo que se acepta en el cargador (en MB).   # Límite parametrizable
 # Debe coincidir con [server] maxUploadSize de .streamlit/config.toml.   # Se valida en dos niveles
 MAX_PDF_MB = 20                   # 20 MB: valor por defecto de Streamlit y de la API inline
@@ -122,6 +128,32 @@ def _crear_limitador():          # Crea el limitador una sola vez por proceso
 
 _limiter = _crear_limitador()    # Aquí se obtiene (o se reutiliza) el limitador global
 
+@st.cache_resource               # Carga el modelo local una sola vez y lo mantiene en memoria
+def _cargar_modelo_local():      # Devuelve el modelo de sentence-transformers
+    """Carga el modelo de embeddings local una sola vez (queda en memoria)."""   # Docstring
+    from sentence_transformers import SentenceTransformer   # Import perezoso: solo si se usa
+    return SentenceTransformer(LOCAL_EMBEDDING_MODEL)   # Descarga/carga el modelo multilingüe
+
+def _motor_embeddings():         # Decide qué motor se usa realmente
+    """Devuelve 'local' si está configurado y la librería está instalada; si no, 'gemini'."""   # Docstring
+    if EMBEDDING_BACKEND != "local":   # ¿Se pidió Gemini?
+        return "gemini"           # Entonces Gemini
+    import importlib.util         # Utilidad para comprobar si un paquete está instalado
+    return "local" if importlib.util.find_spec("sentence_transformers") else "gemini"   # Local si existe
+
+MOTOR_EMBEDDINGS = _motor_embeddings()   # Motor efectivo: "local" o "gemini"
+
+def embed_local(texts):           # Calcula vectores con el modelo local
+    """Vectores con el modelo local: sin API, sin cuota y sin límite de peticiones."""   # Docstring
+    modelo = _cargar_modelo_local()   # Obtiene el modelo (cacheado)
+    return modelo.encode(texts, normalize_embeddings=True).tolist()   # Vectores normalizados como listas
+
+def preparar_texto(texto, titulo=None):   # Prefijo de tarea solo cuando hace falta
+    """Añade el prefijo de tarea solo para Gemini; el modelo local no lo necesita."""   # Docstring
+    if MOTOR_EMBEDDINGS == "local":   # El modelo local no usa prefijos
+        return texto              # Devuelve el texto tal cual
+    return format_document(texto, titulo) if titulo else format_query(texto)   # Gemini: prefijo de documento o de consulta
+
 def get_embeddings_with_retry(client, texts, max_retries=5, initial_delay=2):   # Convierte una LISTA de textos en vectores
     """Devuelve UN embedding por cada texto (no un embedding agregado), con backoff exponencial.   # Inicio del docstring
 
@@ -129,6 +161,8 @@ def get_embeddings_with_retry(client, texts, max_retries=5, initial_delay=2):   
     si se pasa una lista de strings "sueltos", el modelo devuelve un único vector agregado.   # Aviso importante: agregaría todo
     """   # Fin del docstring
     delay = initial_delay          # Espera inicial entre reintentos: 2 segundos
+    if MOTOR_EMBEDDINGS == "local":   # ¿Motor local?
+        return embed_local(texts)  # Sí: calcula los vectores sin llamar a la API
     for attempt in range(max_retries):   # Intenta hasta 5 veces (attempt = 0,1,2,3,4)
         # Respeta la cuota: espera si hace falta antes de enviar el lote.   # Comentario
         _limiter.wait(len(texts))        # Bloquea hasta que haya hueco en la ventana de 60 s
@@ -173,7 +207,7 @@ class SimpleVectorDB:   # Clase que agrupa fragmentos, vectores y metadatos
         self.chunks = []           # Lista de fragmentos de texto (strings)
         self.embeddings = []       # Lista de vectores; el índice i corresponde al chunk i
         self.metadata = []         # Lista de diccionarios {source, chunk_id} en el mismo orden
-        self.model = EMBEDDING_MODEL   # Guarda con qué modelo se generaron; sirve para invalidar el índice
+        self.model = f"{MOTOR_EMBEDDINGS}:{LOCAL_EMBEDDING_MODEL if MOTOR_EMBEDDINGS == 'local' else EMBEDDING_MODEL}"   # Motor+modelo: si cambia, el índice se invalida
 
     def clear(self):               # Vacía la base de datos entera
         self.chunks = []           # Borra los textos
@@ -210,7 +244,7 @@ class SimpleVectorDB:   # Clase que agrupa fragmentos, vectores y metadatos
         for start in range(0, len(doc_chunks), EMBEDDING_BATCH_SIZE):   # Recorre los chunks de 100 en 100
             batch = doc_chunks[start:start + EMBEDDING_BATCH_SIZE]      # Toma el lote actual (máx. 100 fragmentos)
             vectors = get_embeddings_with_retry(                        # Paso 3: convierte el lote a vectores
-                client, [format_document(c, file_name) for c in batch]  # Cada chunk con su prefijo "title/text"
+                client, [preparar_texto(c, file_name) for c in batch]  # Cada chunk con su prefijo (solo si es Gemini)
             )                                                           # Cierra la llamada
             for offset, (chunk, vector) in enumerate(zip(batch, vectors)):   # Recorre chunk y vector emparejados
                 new_chunks.append(chunk)                        # Guarda el texto del fragmento
@@ -228,7 +262,7 @@ class SimpleVectorDB:   # Clase que agrupa fragmentos, vectores y metadatos
             return []                    # ...devuelve lista vacía (evita errores más abajo)
 
         query_vector = np.array(         # Convierte la pregunta en un vector numpy...
-            get_embeddings_with_retry(client, [format_query(query)])[0], dtype=np.float32   # ...pidiendo su embedding a la API
+            get_embeddings_with_retry(client, [preparar_texto(query)])[0], dtype=np.float32   # ...pidiendo su embedding (con prefijo solo si es Gemini)
         )                                # float32 ahorra memoria y es suficiente precisión
         db_vectors = np.array(self.embeddings, dtype=np.float32)   # Matriz (n_fragmentos × dimensiones) con todos los vectores
 
@@ -344,6 +378,10 @@ if 'uploader_names' not in st.session_state:        # ¿Existe el registro de lo
 # --- CONFIGURACIÓN DE LA BARRA LATERAL ---   # Marcador de sección
 with st.sidebar:                 # Todo lo indentado debajo se dibuja en la barra lateral
     st.header("⚙️ Configuración del Sistema")   # Encabezado de la barra lateral
+    motor_emb = f"local · {LOCAL_EMBEDDING_MODEL}" if MOTOR_EMBEDDINGS == "local" else EMBEDDING_MODEL   # Texto del motor activo
+    st.caption(f"🧠 Embeddings: {motor_emb}")   # Muestra qué motor está usando
+    if EMBEDDING_BACKEND == "local" and MOTOR_EMBEDDINGS != "local":   # ¿Se pidió local pero no está instalado?
+        st.warning("⚠️ Falta `sentence-transformers`: se usará Gemini (cuota limitada).")   # Aviso claro
 
     # Obtener la clave de API de Gemini de forma segura   # No se escribe nunca dentro del código
     env_key = os.environ.get("GEMINI_API_KEY", "").strip()   # Lee la clave del entorno y quita espacios sobrantes
