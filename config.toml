@@ -1,0 +1,8 @@
+[server]
+# Tamaño máximo (en MB) que Streamlit acepta por archivo subido.
+# Debe coincidir con MAX_PDF_MB en app.py.
+maxUploadSize = 20
+
+[browser]
+# No recopilar estadísticas de uso.
+gatherUsageStats = false
