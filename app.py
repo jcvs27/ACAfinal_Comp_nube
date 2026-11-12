@@ -30,6 +30,12 @@ from google.genai.errors import APIError  # Excepción del SDK; se importa aunqu
 
 # --- UTILIDADES DEL PIPELINE RAG ---   # Marcador de sección: aquí empiezan las funciones del motor RAG
 # (línea en blanco: solo separa bloques)
+# Modelo de embeddings vigente (noviembre 2026):   # Comentario informativo: contexto de por qué este modelo
+#   - "text-embedding-004"          -> retirado (404 NOT_FOUND)          # Modelo antiguo: la API responde 404
+#   - "gemini-embedding-2-preview"  -> retirado el 10-ago-2026 (404 NOT_FOUND)  # La versión "preview" también murió
+#   - "gemini-embedding-001"        -> sigue disponible, pero es SOLO texto (2048 tokens)  # Alternativa válida
+#   - "gemini-embedding-2"          -> estable y recomendado (multimodal, 8192 tokens)     # El que usamos
+EMBEDDING_MODEL = "gemini-embedding-2"   # Nombre del modelo que convierte texto → vector; se usa en TODO el programa
 EMBEDDING_BATCH_SIZE = 20         # Textos por petición: lotes pequeños para no agotar la cuota por minuto
 
 # Cuota del nivel gratuito de Gemini para embeddings: peticiones por minuto.   # Dato de la documentación
