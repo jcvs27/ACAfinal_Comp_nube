@@ -18,6 +18,7 @@ from pypdf import PdfReader       # Lector de PDF: abre el archivo y extrae el t
 import time                       # time.sleep(): pausa el programa durante los reintentos (backoff)
 import os                         # os.environ: lee variables de entorno, aquí la API key
 import re                         # re: busca el "retry in 1.49s" que devuelve Gemini al agotar cuota
+import inspect                    # inspect: comprueba si st.file_uploader acepta max_upload_size
 from google import genai          # SDK oficial de Google Gen AI (Gemini): cliente para embeddings y chat
 from google.genai import types    # Tipos auxiliares (Content, Part) para construir las peticiones al modelo
 from google.genai.errors import APIError  # Excepción del SDK; se importa aunque el código no la use directamente
@@ -386,11 +387,17 @@ with st.sidebar:                 # Todo lo indentado debajo se dibuja en la barr
     st.divider()   # Línea horizontal separadora
 
     st.subheader("📂 Cargador de Documentos")   # Subtítulo de la zona de carga
+    # El texto "200MB per file" lo pinta Streamlit con SU límite; esto lo baja a MAX_PDF_MB.   # Comentario
+    # Se aplica solo si la versión de Streamlit lo soporta (si no, se ignora sin romper nada).   # Red de seguridad
+    uploader_extra = {}                         # Diccionario de parámetros opcionales del cargador
+    if "max_upload_size" in inspect.signature(st.file_uploader).parameters:   # ¿La versión lo soporta?
+        uploader_extra["max_upload_size"] = MAX_PDF_MB   # Sí: se pasa el límite al propio widget
     uploaded_files = st.file_uploader(          # Componente de subida de archivos
         "Subir archivos PDF",                   # Etiqueta
         type=['pdf'],                           # Solo acepta .pdf
         accept_multiple_files=True,             # Permite varios archivos a la vez
-        help=f"Tamaño máximo por archivo: {MAX_PDF_MB} MB."   # Muestra el límite al usuario
+        help=f"Tamaño máximo por archivo: {MAX_PDF_MB} MB.",   # Muestra el límite al usuario
+        **uploader_extra                        # Aquí entra max_upload_size (si existe)
     )                                           # Devuelve una lista de objetos (o None si no hay nada)
     # Texto propio que NO desaparece al subir un archivo (el de Streamlit sí desaparece).   # Comentario
     if uploaded_files:                          # ¿Hay archivos subidos?
@@ -398,12 +405,9 @@ with st.sidebar:                 # Todo lo indentado debajo se dibuja en la barr
         st.caption(f"📎 {len(uploaded_files)} archivo(s) · {total_mb:.1f} MB en total · máx. {MAX_PDF_MB} MB por archivo")   # Resumen permanente
     else:                                       # Si no hay archivos...
         st.caption(f"📎 Máximo {MAX_PDF_MB} MB por archivo · solo PDF")   # ...muestra solo el límite
-    # Diagnóstico desplegable: de dónde sale el límite que Streamlit tiene cargado de verdad.   # Comentario
+    # Diagnóstico desplegable: límite que Streamlit tiene cargado de verdad.   # Comentario
     with st.expander("🔧 Diagnóstico de configuración"):   # Cajón cerrado por defecto
         st.write(f"Carpeta de trabajo: `{os.getcwd()}`")   # Desde qué carpeta se lanzó la app
-        from streamlit import config as st_config   # Módulo de configuración de Streamlit
-        cfg_getter = getattr(st_config, "get_config_files", None)   # Función que lista los config.toml leídos (si existe)
-        st.write(f"Config leídos: `{cfg_getter() if cfg_getter else 'no disponible'}`")   # Rutas de los config.toml
         st.write(f"Límite efectivo de Streamlit: **{st.get_option('server.maxUploadSize')} MB**")   # Valor real cargado
     sync_with_uploader = st.toggle(             # Interruptor on/off
         "Al quitar un archivo del cargador, borrarlo del RAG",   # Texto del interruptor
