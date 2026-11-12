@@ -9,7 +9,7 @@
 # =============================================================================
 
 # ----------------------------------------------------------------------------
-# 1) IMPORTACIONES — las herramientas que usa el programa
+# 1) IMPORTACIONES — las herramientas que usa el programatengo
 # ----------------------------------------------------------------------------
 
 import streamlit as st            # Framework web: convierte este script en una app interactiva en el navegador
@@ -39,7 +39,7 @@ EMBEDDING_BATCH_SIZE = 20         # Textos por petición: lotes pequeños para n
 
 # Cuota del nivel gratuito de Gemini para embeddings: peticiones por minuto.   # Dato de la documentación
 # Cada texto del lote cuenta como una petición, así que hay que espaciarlas.   # Por eso no se manda todo de golpe
-EMBEDDING_RPM = 90                # 90 < 100: margen de seguridad sobre el límite real del Free Tier
+EMBEDDING_RPM = 80                # 80 < 100: margen de seguridad sobre el límite real del Free Tier
 
 # Tamaño máximo por archivo que se acepta en el cargador (en MB).   # Límite parametrizable
 # Debe coincidir con [server] maxUploadSize de .streamlit/config.toml.   # Se valida en dos niveles
@@ -115,7 +115,12 @@ def server_retry_delay(message, default=2.0):   # Lee el "retry in 1.49s" que de
     return float(match.group(1)) + 0.5 if match else default   # Devuelve ese tiempo (+0.5 s de margen) o el valor por defecto
 
 # Instancia compartida: todas las llamadas a embeddings pasan por el mismo límite.   # Una sola ventana global
-_limiter = RateLimiter(EMBEDDING_RPM)   # Limita a EMBEDDING_RPM peticiones por minuto
+@st.cache_resource               # Cachea el objeto: sobrevive a los reruns de Streamlit
+def _crear_limitador():          # Crea el limitador una sola vez por proceso
+    """Un único limitador por proceso: sobrevive a los reruns de Streamlit."""   # Docstring
+    return RateLimiter(EMBEDDING_RPM)   # Limitador con el límite configurado
+
+_limiter = _crear_limitador()    # Aquí se obtiene (o se reutiliza) el limitador global
 
 def get_embeddings_with_retry(client, texts, max_retries=5, initial_delay=2):   # Convierte una LISTA de textos en vectores
     """Devuelve UN embedding por cada texto (no un embedding agregado), con backoff exponencial.   # Inicio del docstring
@@ -143,12 +148,16 @@ def get_embeddings_with_retry(client, texts, max_retries=5, initial_delay=2):   
                 for code in ("429", "RESOURCE_EXHAUSTED", "500", "503",   # ...de cuota agotada o de servidor caído
                              "UNAVAILABLE", "INTERNAL", "DEADLINE_EXCEEDED")  # ...o de servicio no disponible
             )                             # Fin del any(): True si encontró alguno
-            if retriable and attempt < max_retries - 1:   # Si es temporal Y aún quedan intentos...
-                # Si el servidor dice cuánto esperar ("retry in 1.49s"), se respeta.   # Comentario
+            if not retriable or attempt >= max_retries - 1:   # ¿No es temporal o ya no quedan intentos?
+                raise                     # ...relanza la excepción para que la maneje quien llamó
+            if "429" in msg or "RESOURCE_EXHAUSTED" in msg:   # ¿Es cuota agotada?
+                # Cuota agotada: se espera a que se vacíe la ventana del minuto.   # Comentario
+                _limiter.sent = []        # Vacía la ventana: el minuto empieza de cero
+                time.sleep(max(server_retry_delay(msg), 61))   # Espera al menos 61 s (una ventana completa)
+            else:                         # Si es otro error temporal (500, 503...)
+                # Error temporal (500, 503...): backoff exponencial normal.   # Comentario
                 time.sleep(max(delay, server_retry_delay(msg)))   # ...espera lo que pida el servidor o el backoff
                 delay *= 2                # Duplica la espera para el siguiente intento (backoff exponencial)
-            else:                         # Si NO es temporal o ya no quedan intentos...
-                raise                     # ...relanza la excepción para que la maneje quien llamó
 
 def get_embedding_with_retry(client, text_chunk):   # Envoltorio cómodo para UN solo texto
     """Compatibilidad: embedding de un único texto."""   # Docstring
