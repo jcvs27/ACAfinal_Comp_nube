@@ -2,3 +2,4 @@ streamlit
 numpy
 pypdf
 google-genai
+sentence-transformers
