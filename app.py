@@ -128,18 +128,18 @@ def get_embeddings_with_retry(client, texts, max_retries=6, initial_delay=3.0): 
             msg = str(e)                  # Conversión a string
             is_429 = any(code in msg for code in ("429", "RESOURCE_EXHAUSTED"))   # Identifica 429
             is_server_error = any(code in msg for code in ("500", "503", "UNAVAILABLE", "INTERNAL"))   # Identifica 5xx
-            
+
             if (is_429 or is_server_error) and attempt < max_retries - 1:   # Si aplica reintento...
                 extracted_delay = server_retry_delay(msg, default=delay)   # Busca recomendación del server
                 jitter = random.uniform(0.5, 1.5)   # Ruido aleatorio (jitter) para romper sincronizaciones concurrentes
                 sleep_time = (extracted_delay * jitter)   # Tiempo final ponderado
-                
+
                 # Usamos toast en Streamlit para avisar al usuario si está corriendo interactivamente
                 try:
                     st.toast(f"⏳ Límite de cuota alcanzado. Reintentando bloque en {sleep_time:.2f}s...", icon="⚠️")
                 except Exception:
                     pass
-                
+
                 time.sleep(sleep_time)   # Pausa el thread
                 delay *= 2.0             # Escala de backoff exponencial estándar
             else:
@@ -338,11 +338,11 @@ with st.sidebar:
 
     st.divider()
     st.subheader("📂 Cargador de Documentos")
-    
+
     uploader_extra = {}
     if "max_upload_size" in inspect.signature(st.file_uploader).parameters:
         uploader_extra["max_upload_size"] = MAX_PDF_MB
-        
+
     uploaded_files = st.file_uploader(
         "Subir archivos PDF",
         type=['pdf'],
@@ -387,7 +387,7 @@ else:
         if sync_with_uploader and name in st.session_state.processed_files:
             n = st.session_state.vector_db.remove_document(name)
             st.session_state.processed_files.discard(name)
-            st.toast(f"🗑️ {name} eliminado del RAG ({n} fragmentos)", icon="🗑_")
+            st.toast(f"🗑️ {name} eliminado del RAG ({n} fragmentos)", icon="🗑️")   # Corregido: un único emoji de carácter
     st.session_state.uploader_names = current_names
 
 # ----------------------------------------------------------------------------
@@ -396,7 +396,7 @@ else:
 
 if client and uploaded_files:
     for uploaded_file in uploaded_files:
-        if (uploaded_file.name not in st.session_state.processed_files 
+        if (uploaded_file.name not in st.session_state.processed_files
                 and uploaded_file.name not in st.session_state.ignored_files):
             size_mb = getattr(uploaded_file, "size", 0) / (1024 * 1024)
             if size_mb > MAX_PDF_MB:
