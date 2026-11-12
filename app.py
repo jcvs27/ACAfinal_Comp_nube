@@ -1,16 +1,4 @@
 # =============================================================================
-#  app_comentado.py  —  RAG PDF Expert Chat
-# -----------------------------------------------------------------------------
-#  Es EXACTAMENTE el mismo código que app.py, pero con una explicación en cada
-#  línea. Sirve para estudiar/defender el proyecto, no cambia el comportamiento.
-#
-#  Ejecutar:   streamlit run app_comentado.py
-#
-#  Convención:
-#    · El comentario a la derecha de una línea explica ESA línea.
-#    · El comentario encima de un bloque explica el bloque.
-#    · Las líneas en blanco solo separan bloques y no llevan explicación.
-# =============================================================================
 
 # ----------------------------------------------------------------------------
 # 1) IMPORTACIONES — las herramientas que usa el programa
@@ -50,7 +38,7 @@ def extract_text_from_pdf(pdf_file):   # Define la función; recibe un archivo P
     for page in reader.pages:      # Recorre cada página del documento en orden
         page_text = page.extract_text()   # Extrae el texto de esa página (puede devolver None si es una imagen)
         if page_text:                     # Si la página tenía texto (no None y no vacío)...
-            text += page_text + "\n"      # ...lo añade al acumulador con un salto de línea de separación
+            text += page_text + "" # ...lo añade al acumulador con un salto de línea de separación
     return text                    # Devuelve TODO el texto del PDF como un único string
 
 # ----------------------------------------------------------------------------
@@ -220,33 +208,33 @@ def preguntar_al_rag(pregunta, db, client, modelo_principal, top_k=3):   # Orque
     if not resultados:                   # Si no se recuperó nada...
         contexto = "No hay contexto disponible ya que no se han cargado documentos en la base de datos vectorial."   # Texto de relleno
     else:                                # Si sí hay fragmentos...
-        contexto = "\n---\n".join([r['text'] for r in resultados])   # Los une separados por "---" para el prompt
+        contexto = "---".join([r['text'] for r in resultados])   # Los une separados por "---" para el prompt
 
     # --- AQUÍ EMPIEZA EL PROMPT (texto entre triple comilla: NO se puede comentar por dentro) ---
     # f""" ... """ = cadena formateada: las {llaves} se sustituyen por variables.
     # El prompt define el rol ("asistente experto"), las reglas anti-alucinación
     # y luego inyecta el contexto recuperado y la pregunta del usuario.
-    # El prompt tiene 3 partes: (1) rol del modelo, (2) reglas anti-alucinación,
-    # (3) contexto recuperado + pregunta. IMPORTANTE: aquí no se pueden poner
-    # comentarios dentro de las triple comillas, porque todo ese texto se envía
-    # tal cual al modelo. Por eso la explicación va antes y después del bloque.
     prompt = f"""Eres un asistente experto de soporte técnico y legal. Tu tarea es responder la pregunta del usuario utilizando únicamente el contexto proporcionado de forma precisa, clara y detallada.
-
+# ↑ Línea 1 del prompt: define el papel del modelo y su objetivo
+# (línea en blanco dentro del prompt: separa rol de reglas)
 Instrucciones estrictas:
+# ↑ Encabezado de las reglas que el modelo debe obedecer
 1. Utiliza única y exclusivamente la información contenida en el Contexto.
+# ↑ Regla 1: no usar conocimiento externo (evita respuestas inventadas)
 2. Si la respuesta a la pregunta no se puede deducir o no está presente en el Contexto, responde amablemente indicando que no posees suficiente información en los documentos cargados para responder con certeza.
+# ↑ Regla 2: qué hacer cuando la respuesta no está en los documentos
 3. No intentes inventar, extrapolar o alucinar información fuera del Contexto proporcionado.
-
+# ↑ Regla 3: prohibición explícita de alucinar
+# (línea en blanco dentro del prompt)
 Contexto:
+# ↑ Etiqueta que precede al texto recuperado
 {contexto}
-
+# ↑ AQUÍ se inyecta la variable con los fragmentos encontrados
+# (línea en blanco dentro del prompt)
 Pregunta: {pregunta}
-Respuesta:"""
-    # ↑ Dentro del bloque anterior:
-    #   · "Instrucciones estrictas" + 3 reglas → impiden que el modelo invente.
-    #   · {contexto} → aquí se inyectan los fragmentos recuperados.
-    #   · {pregunta} → aquí se inyecta lo que escribió el usuario.
-    #   · "Respuesta:" al final empuja al modelo a continuar escribiendo.
+# ↑ AQUÍ se inyecta la pregunta del usuario
+Respuesta:
+# ↑ "Respuesta:" al final empuja al modelo a continuar escribiendo la respuesta
     # --- FIN DEL PROMPT ---
 
     try:                                       # Protege la llamada por si la API falla
