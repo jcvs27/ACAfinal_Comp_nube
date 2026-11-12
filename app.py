@@ -31,10 +31,10 @@ from google.genai.errors import APIError  # Excepción del SDK; se importa aunqu
 # --- UTILIDADES DEL PIPELINE RAG ---   # Marcador de sección: aquí empiezan las funciones del motor RAG
 # (línea en blanco: solo separa bloques)
 EMBEDDING_MODEL = "gemini-embedding-2"   # Nombre del modelo que convierte texto → vector; se usa en TODO el programa
-EMBEDDING_BATCH_SIZE = 10         # Reducido de 20 a 10 para mitigar picos de consumo de tokens y rate-limiting de golpe
+EMBEDDING_BATCH_SIZE = 5          # Reducido de 10 a 5 para mitigar picos de consumo de tokens y rate-limiting de golpe
 
 # Cuota del nivel gratuito de Gemini para embeddings: peticiones por minuto.
-EMBEDDING_RPM = 80                # Bajado de 90 a 80 para mayor margen de seguridad con respecto al límite Free Tier
+EMBEDDING_RPM = 45                # Bajado de 80 a 45 para máxima seguridad en el Free Tier de 100 RPM
 
 # Tamaño máximo por archivo que se acepta en el cargador (en MB).
 MAX_PDF_MB = 20                   # 20 MB: valor por defecto de Streamlit y de la API inline
@@ -101,16 +101,16 @@ class RateLimiter:                # Control de ventana de peticiones
             time.sleep(max(0.2, 60 - (now - self.sent[0])))   # Espera inteligente al próximo hueco
         self.sent.extend([time.time()] * n)   # Añade marcas del lote actual
 
-def server_retry_delay(message, default=2.0):   # Extrae delay mandado por Google
+def server_retry_delay(message, default=3.0):   # Extrae delay mandado por Google
     """Busca expresiones de tiempo recomendadas de espera en el cuerpo del error."""   # Docstring
-    match = re.search(r"(?:retry in|after) ([0-9.]+)\s?s", message, re.IGNORECASE)   # Regex robusta para capturar segundos
+    match = re.search(r"(?:retry in|after|retry after) ([0-9.]+)\s?s", message, re.IGNORECASE)   # Regex robusta para capturar segundos
     if match:
-        return float(match.group(1)) + 1.0  # Añade 1s extra de colchón para evitar el límite exacto
+        return float(match.group(1)) + 2.0  # Añade 2s extra de colchón para evitar el límite exacto
     return default   # Retorna el default si no hay matches
 
 _limiter = RateLimiter(EMBEDDING_RPM)   # Instancia del RateLimiter
 
-def get_embeddings_with_retry(client, texts, max_retries=6, initial_delay=3.0):   # Firma robusta
+def get_embeddings_with_retry(client, texts, max_retries=7, initial_delay=4.0):   # Firma robusta
     """Llama a la API de embeddings con backoff exponencial, jitter y parseo de cuota 429."""   # Docstring
     delay = initial_delay          # Delay base de reintento
     for attempt in range(max_retries):   # Intentos sucesivos
@@ -123,6 +123,7 @@ def get_embeddings_with_retry(client, texts, max_retries=6, initial_delay=3.0): 
                     for t in texts
                 ],
             )
+            time.sleep(0.3)               # Espera de cortesía adicional entre llamadas exitosas para suavizar el ritmo
             return [list(e.values) for e in response.embeddings]   # Retorno exitoso
         except Exception as e:            # Captura de errores de API
             msg = str(e)                  # Conversión a string
@@ -131,7 +132,7 @@ def get_embeddings_with_retry(client, texts, max_retries=6, initial_delay=3.0): 
 
             if (is_429 or is_server_error) and attempt < max_retries - 1:   # Si aplica reintento...
                 extracted_delay = server_retry_delay(msg, default=delay)   # Busca recomendación del server
-                jitter = random.uniform(0.5, 1.5)   # Ruido aleatorio (jitter) para romper sincronizaciones concurrentes
+                jitter = random.uniform(0.8, 1.5)   # Ruido aleatorio para romper sincronizaciones concurrentes
                 sleep_time = (extracted_delay * jitter)   # Tiempo final ponderado
 
                 # Usamos toast en Streamlit para avisar al usuario si está corriendo interactivamente
