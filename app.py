@@ -30,13 +30,14 @@ from google.genai.errors import APIError  # Excepción del SDK; se importa aunqu
 
 # --- UTILIDADES DEL PIPELINE RAG ---   # Marcador de sección: aquí empiezan las funciones del motor RAG
 # (línea en blanco: solo separa bloques)
-EMBEDDING_MODEL = "gemini-embedding-2"   # Nombre del modelo que convierte texto → vector; se usa en TODO el programa
-EMBEDDING_BATCH_SIZE = 10         # Restaurado de 5 a 10 para mayor velocidad de carga por lote
+EMBEDDING_BATCH_SIZE = 20         # Textos por petición: lotes pequeños para no agotar la cuota por minuto
 
-# Cuota del nivel gratuito de Gemini para embeddings: peticiones por minuto.
-EMBEDDING_RPM = 80                # Restaurado de 45 a 80 para un procesamiento mucho más ágil
+# Cuota del nivel gratuito de Gemini para embeddings: peticiones por minuto.   # Dato de la documentación
+# Cada texto del lote cuenta como una petición, así que hay que espaciarlas.   # Por eso no se manda todo de golpe
+EMBEDDING_RPM = 90                # 90 < 100: margen de seguridad sobre el límite real del Free Tier
 
-# Tamaño máximo por archivo que se acepta en el cargador (en MB).
+# Tamaño máximo por archivo que se acepta en el cargador (en MB).   # Límite parametrizable
+# Debe coincidir con [server] maxUploadSize de .streamlit/config.toml.   # Se valida en dos niveles
 MAX_PDF_MB = 20                   # 20 MB: valor por defecto de Streamlit y de la API inline
 
 # ----------------------------------------------------------------------------
@@ -182,7 +183,7 @@ class SimpleVectorDB:   # Clase contenedora del RAG
         # Contenedor de aviso visual en la app
         status_placeholder = st.empty()
         status_placeholder.info(f"📖 Leyendo y extrayendo texto del documento: {file_name}...")
-        
+
         text = extract_text_from_pdf(file_content)
         if not text.strip():
             status_placeholder.empty()
@@ -195,7 +196,7 @@ class SimpleVectorDB:   # Clase contenedora del RAG
 
         total_chunks = len(doc_chunks)
         total_batches = (total_chunks + EMBEDDING_BATCH_SIZE - 1) // EMBEDDING_BATCH_SIZE
-        
+
         status_placeholder.info(f"✂️ Texto segmentado en {total_chunks} fragmentos. Iniciando vectorización semántica...")
 
         new_chunks, new_vectors, new_meta = [], [], []
@@ -206,7 +207,7 @@ class SimpleVectorDB:   # Clase contenedora del RAG
                 f"⚡ **Procesando lote {current_batch_num} de {total_batches}** "
                 f"({min(start_idx + EMBEDDING_BATCH_SIZE, total_chunks)}/{total_chunks} fragmentos)..."
             )
-            
+
             batch = doc_chunks[start_idx:start_idx + EMBEDDING_BATCH_SIZE]
             formatted_batch = [format_document(c, file_name) for c in batch]
             vectors = get_embeddings_with_retry(client, formatted_batch)   # Petición
@@ -218,7 +219,7 @@ class SimpleVectorDB:   # Clase contenedora del RAG
         self.chunks.extend(new_chunks)
         self.embeddings.extend(new_vectors)
         self.metadata.extend(new_meta)
-        
+
         # Limpiamos el marcador de estado al finalizar satisfactoriamente
         status_placeholder.empty()
         return len(new_chunks)
@@ -229,7 +230,7 @@ class SimpleVectorDB:   # Clase contenedora del RAG
             return []
 
         # Embed query
-        query_vector = np.array( 
+        query_vector = np.array(
             get_embeddings_with_retry(client, [format_query(query)])[0], dtype=np.float32
         )
         db_vectors = np.array(self.embeddings, dtype=np.float32)
