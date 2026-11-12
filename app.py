@@ -17,6 +17,7 @@ import numpy as np                # Álgebra numérica: arrays y cálculo de la 
 from pypdf import PdfReader       # Lector de PDF: abre el archivo y extrae el texto de cada página
 import time                       # time.sleep(): pausa el programa durante los reintentos (backoff)
 import os                         # os.environ: lee variables de entorno, aquí la API key
+import re                         # re: busca el "retry in 1.49s" que devuelve Gemini al agotar cuota
 from google import genai          # SDK oficial de Google Gen AI (Gemini): cliente para embeddings y chat
 from google.genai import types    # Tipos auxiliares (Content, Part) para construir las peticiones al modelo
 from google.genai.errors import APIError  # Excepción del SDK; se importa aunque el código no la use directamente
@@ -33,7 +34,11 @@ from google.genai.errors import APIError  # Excepción del SDK; se importa aunqu
 #   - "gemini-embedding-001"        -> sigue disponible, pero es SOLO texto (2048 tokens)  # Alternativa válida
 #   - "gemini-embedding-2"          -> estable y recomendado (multimodal, 8192 tokens)     # El que usamos
 EMBEDDING_MODEL = "gemini-embedding-2"   # Nombre del modelo que convierte texto → vector; se usa en TODO el programa
-EMBEDDING_BATCH_SIZE = 100        # Cuántos textos se envían por petición; 100 es el máximo de :batchEmbedContents
+EMBEDDING_BATCH_SIZE = 20         # Textos por petición: lotes pequeños para no agotar la cuota por minuto
+
+# Cuota del nivel gratuito de Gemini para embeddings: peticiones por minuto.   # Dato de la documentación
+# Cada texto del lote cuenta como una petición, así que hay que espaciarlas.   # Por eso no se manda todo de golpe
+EMBEDDING_RPM = 90                # 90 < 100: margen de seguridad sobre el límite real del Free Tier
 
 # Tamaño máximo por archivo que se acepta en el cargador (en MB).   # Límite parametrizable
 # Debe coincidir con [server] maxUploadSize de .streamlit/config.toml.   # Se valida en dos niveles
@@ -85,6 +90,32 @@ def format_document(text, title=None):   # Prepara un FRAGMENTO de documento ant
 # 6) EMBEDDINGS CON REINTENTOS (la parte que habla con la API de Google)
 # ----------------------------------------------------------------------------
 
+class RateLimiter:                # Controla cuántas peticiones se envían por minuto
+    """Ventana deslizante de 60 s: evita superar las peticiones por minuto permitidas."""   # Docstring
+
+    def __init__(self, rpm):      # Constructor: recibe el límite por minuto
+        self.rpm = max(1, int(rpm))   # Límite por minuto (nunca menos de 1)
+        self.sent = []                # Marcas de tiempo de las peticiones ya enviadas
+
+    def wait(self, n=1):          # Espera lo necesario antes de enviar `n` peticiones
+        """Espera lo necesario para que enviar `n` peticiones más no supere el límite."""   # Docstring
+        n = min(n, self.rpm)      # Un lote mayor que el límite se recorta (evita esperar para siempre)
+        while True:               # Repite hasta que haya hueco en la ventana de 60 s
+            now = time.time()     # Hora actual
+            self.sent = [t for t in self.sent if now - t < 60]   # Descarta lo enviado hace más de 60 s
+            if len(self.sent) + n <= self.rpm:   # ¿Caben las `n` nuevas peticiones?
+                break             # Sí: salimos del bucle
+            time.sleep(max(0.5, 60 - (now - self.sent[0])))   # No: espera a que caduque la más antigua
+        self.sent.extend([time.time()] * n)   # Anota las peticiones que se van a enviar
+
+def server_retry_delay(message, default=2.0):   # Lee el "retry in 1.49s" que devuelve Gemini
+    """Lee el «Please retry in 1.49s» del error de Gemini y espera al menos eso."""   # Docstring
+    match = re.search(r"retry in ([0-9.]+)s", message)   # Busca el número de segundos en el mensaje
+    return float(match.group(1)) + 0.5 if match else default   # Devuelve ese tiempo (+0.5 s de margen) o el valor por defecto
+
+# Instancia compartida: todas las llamadas a embeddings pasan por el mismo límite.   # Una sola ventana global
+_limiter = RateLimiter(EMBEDDING_RPM)   # Limita a EMBEDDING_RPM peticiones por minuto
+
 def get_embeddings_with_retry(client, texts, max_retries=5, initial_delay=2):   # Convierte una LISTA de textos en vectores
     """Devuelve UN embedding por cada texto (no un embedding agregado), con backoff exponencial.   # Inicio del docstring
 
@@ -93,6 +124,8 @@ def get_embeddings_with_retry(client, texts, max_retries=5, initial_delay=2):   
     """   # Fin del docstring
     delay = initial_delay          # Espera inicial entre reintentos: 2 segundos
     for attempt in range(max_retries):   # Intenta hasta 5 veces (attempt = 0,1,2,3,4)
+        # Respeta la cuota: espera si hace falta antes de enviar el lote.   # Comentario
+        _limiter.wait(len(texts))        # Bloquea hasta que haya hueco en la ventana de 60 s
         try:                             # Bloque protegido: si la API falla, saltamos al except
             response = client.models.embed_content(   # Llama al endpoint de embeddings del SDK
                 model=EMBEDDING_MODEL,                # Modelo a usar: "gemini-embedding-2"
@@ -110,7 +143,8 @@ def get_embeddings_with_retry(client, texts, max_retries=5, initial_delay=2):   
                              "UNAVAILABLE", "INTERNAL", "DEADLINE_EXCEEDED")  # ...o de servicio no disponible
             )                             # Fin del any(): True si encontró alguno
             if retriable and attempt < max_retries - 1:   # Si es temporal Y aún quedan intentos...
-                time.sleep(delay)         # ...espera (2s, luego 4s, 8s, 16s...)
+                # Si el servidor dice cuánto esperar ("retry in 1.49s"), se respeta.   # Comentario
+                time.sleep(max(delay, server_retry_delay(msg)))   # ...espera lo que pida el servidor o el backoff
                 delay *= 2                # Duplica la espera para el siguiente intento (backoff exponencial)
             else:                         # Si NO es temporal o ya no quedan intentos...
                 raise                     # ...relanza la excepción para que la maneje quien llamó
@@ -364,10 +398,13 @@ with st.sidebar:                 # Todo lo indentado debajo se dibuja en la barr
         st.caption(f"📎 {len(uploaded_files)} archivo(s) · {total_mb:.1f} MB en total · máx. {MAX_PDF_MB} MB por archivo")   # Resumen permanente
     else:                                       # Si no hay archivos...
         st.caption(f"📎 Máximo {MAX_PDF_MB} MB por archivo · solo PDF")   # ...muestra solo el límite
-    # Diagnóstico: si Streamlit no ha leído el config.toml, avisa de que sigue con otro límite.   # Comentario
-    server_max = st.get_option("server.maxUploadSize")   # Límite que Streamlit tiene cargado de verdad
-    if server_max and int(server_max) != MAX_PDF_MB:     # ¿No coincide con el nuestro?
-        st.warning(f"⚠️ Streamlit sigue usando {server_max} MB. Reinicia la app para aplicar {MAX_PDF_MB} MB.")   # Avisa de que hay que reiniciar
+    # Diagnóstico desplegable: de dónde sale el límite que Streamlit tiene cargado de verdad.   # Comentario
+    with st.expander("🔧 Diagnóstico de configuración"):   # Cajón cerrado por defecto
+        st.write(f"Carpeta de trabajo: `{os.getcwd()}`")   # Desde qué carpeta se lanzó la app
+        from streamlit import config as st_config   # Módulo de configuración de Streamlit
+        cfg_getter = getattr(st_config, "get_config_files", None)   # Función que lista los config.toml leídos (si existe)
+        st.write(f"Config leídos: `{cfg_getter() if cfg_getter else 'no disponible'}`")   # Rutas de los config.toml
+        st.write(f"Límite efectivo de Streamlit: **{st.get_option('server.maxUploadSize')} MB**")   # Valor real cargado
     sync_with_uploader = st.toggle(             # Interruptor on/off
         "Al quitar un archivo del cargador, borrarlo del RAG",   # Texto del interruptor
         value=True,                                              # Activado por defecto
@@ -445,6 +482,8 @@ if client and uploaded_files:              # Solo si hay cliente Y hay archivos 
                                 "Prueba `gemini-embedding-001` o revisa que la API de embeddings "       # Parte 3: alternativa
                                 "esté habilitada para tu proyecto."                                     # Parte 4
                             )                                          # Cierra el st.info
+                        elif "429" in msg or "RESOURCE_EXHAUSTED" in msg:   # Si es cuota agotada...
+                            st.info("Cuota gratuita agotada: el nivel gratuito permite unas 100 peticiones de embeddings por minuto y cada fragmento cuenta como una. Espera un minuto y reintenta, sube menos PDFs a la vez o activa la facturación en Google AI Studio.")   # ...explica qué pasó y qué hacer
 
 # ----------------------------------------------------------------------------
 # 15) LISTA DE DOCUMENTOS INDEXADOS (con borrado individual)
