@@ -31,10 +31,10 @@ from google.genai.errors import APIError  # Excepción del SDK; se importa aunqu
 # --- UTILIDADES DEL PIPELINE RAG ---   # Marcador de sección: aquí empiezan las funciones del motor RAG
 # (línea en blanco: solo separa bloques)
 EMBEDDING_MODEL = "gemini-embedding-2"   # Nombre del modelo que convierte texto → vector; se usa en TODO el programa
-EMBEDDING_BATCH_SIZE = 5          # Reducido de 10 a 5 para mitigar picos de consumo de tokens y rate-limiting de golpe
+EMBEDDING_BATCH_SIZE = 10         # Restaurado de 5 a 10 para mayor velocidad de carga por lote
 
 # Cuota del nivel gratuito de Gemini para embeddings: peticiones por minuto.
-EMBEDDING_RPM = 45                # Bajado de 80 a 45 para máxima seguridad en el Free Tier de 100 RPM
+EMBEDDING_RPM = 80                # Restaurado de 45 a 80 para un procesamiento mucho más ágil
 
 # Tamaño máximo por archivo que se acepta en el cargador (en MB).
 MAX_PDF_MB = 20                   # 20 MB: valor por defecto de Streamlit y de la API inline
@@ -105,12 +105,12 @@ def server_retry_delay(message, default=3.0):   # Extrae delay mandado por Googl
     """Busca expresiones de tiempo recomendadas de espera en el cuerpo del error."""   # Docstring
     match = re.search(r"(?:retry in|after|retry after) ([0-9.]+)\s?s", message, re.IGNORECASE)   # Regex robusta para capturar segundos
     if match:
-        return float(match.group(1)) + 2.0  # Añade 2s extra de colchón para evitar el límite exacto
+        return float(match.group(1)) + 1.5  # Añade colchón mínimo para evitar el límite exacto
     return default   # Retorna el default si no hay matches
 
 _limiter = RateLimiter(EMBEDDING_RPM)   # Instancia del RateLimiter
 
-def get_embeddings_with_retry(client, texts, max_retries=7, initial_delay=4.0):   # Firma robusta
+def get_embeddings_with_retry(client, texts, max_retries=6, initial_delay=3.0):   # Firma robusta
     """Llama a la API de embeddings con backoff exponencial, jitter y parseo de cuota 429."""   # Docstring
     delay = initial_delay          # Delay base de reintento
     for attempt in range(max_retries):   # Intentos sucesivos
@@ -123,7 +123,7 @@ def get_embeddings_with_retry(client, texts, max_retries=7, initial_delay=4.0): 
                     for t in texts
                 ],
             )
-            time.sleep(0.3)               # Espera de cortesía adicional entre llamadas exitosas para suavizar el ritmo
+            time.sleep(0.1)               # Retardo mínimo para estabilizar el flujo
             return [list(e.values) for e in response.embeddings]   # Retorno exitoso
         except Exception as e:            # Captura de errores de API
             msg = str(e)                  # Conversión a string
@@ -132,7 +132,7 @@ def get_embeddings_with_retry(client, texts, max_retries=7, initial_delay=4.0): 
 
             if (is_429 or is_server_error) and attempt < max_retries - 1:   # Si aplica reintento...
                 extracted_delay = server_retry_delay(msg, default=delay)   # Busca recomendación del server
-                jitter = random.uniform(0.8, 1.5)   # Ruido aleatorio para romper sincronizaciones concurrentes
+                jitter = random.uniform(0.7, 1.3)   # Ruido aleatorio moderado
                 sleep_time = (extracted_delay * jitter)   # Tiempo final ponderado
 
                 # Usamos toast en Streamlit para avisar al usuario si está corriendo interactivamente
@@ -178,29 +178,49 @@ class SimpleVectorDB:   # Clase contenedora del RAG
         return removed
 
     def add_document(self, client, file_name, file_content):   # Indexador robusto
-        """Procesa, chunkifica e indexa un PDF completo de forma atómica."""   # Docstring
+        """Procesa, chunkifica e indexa un PDF completo de forma atómica e informa el estado."""   # Docstring
+        # Contenedor de aviso visual en la app
+        status_placeholder = st.empty()
+        status_placeholder.info(f"📖 Leyendo y extrayendo texto del documento: {file_name}...")
+        
         text = extract_text_from_pdf(file_content)
         if not text.strip():
+            status_placeholder.empty()
             raise ValueError("No se pudo extraer texto del PDF (¿es un escaneo sin capa OCR?)")
 
         doc_chunks = [c for c in chunk_text(text) if c.strip()]
         if not doc_chunks:
+            status_placeholder.empty()
             raise ValueError("El PDF no produjo fragmentos válidos")
 
+        total_chunks = len(doc_chunks)
+        total_batches = (total_chunks + EMBEDDING_BATCH_SIZE - 1) // EMBEDDING_BATCH_SIZE
+        
+        status_placeholder.info(f"✂️ Texto segmentado en {total_chunks} fragmentos. Iniciando vectorización semántica...")
+
         new_chunks, new_vectors, new_meta = [], [], []
-        for start in range(0, len(doc_chunks), EMBEDDING_BATCH_SIZE):
-            batch = doc_chunks[start:start + EMBEDDING_BATCH_SIZE]
-            # Formateamos documentos con prefijos para optimizar gemini-embedding-2
+        for start_idx in range(0, total_chunks, EMBEDDING_BATCH_SIZE):
+            current_batch_num = (start_idx // EMBEDDING_BATCH_SIZE) + 1
+            # Mostramos un aviso de progreso detallado
+            status_placeholder.markdown(
+                f"⚡ **Procesando lote {current_batch_num} de {total_batches}** "
+                f"({min(start_idx + EMBEDDING_BATCH_SIZE, total_chunks)}/{total_chunks} fragmentos)..."
+            )
+            
+            batch = doc_chunks[start_idx:start_idx + EMBEDDING_BATCH_SIZE]
             formatted_batch = [format_document(c, file_name) for c in batch]
-            vectors = get_embeddings_with_retry(client, formatted_batch)   # Petición con reintentos avanzados y tolerante a 429
+            vectors = get_embeddings_with_retry(client, formatted_batch)   # Petición
             for offset, (chunk, vector) in enumerate(zip(batch, vectors)):
                 new_chunks.append(chunk)
                 new_vectors.append(vector)
-                new_meta.append({"source": file_name, "chunk_id": start + offset})
+                new_meta.append({"source": file_name, "chunk_id": start_idx + offset})
 
         self.chunks.extend(new_chunks)
         self.embeddings.extend(new_vectors)
         self.metadata.extend(new_meta)
+        
+        # Limpiamos el marcador de estado al finalizar satisfactoriamente
+        status_placeholder.empty()
         return len(new_chunks)
 
     def search(self, client, query, top_k=3):   # Búsqueda coseno
@@ -209,7 +229,7 @@ class SimpleVectorDB:   # Clase contenedora del RAG
             return []
 
         # Embed query
-        query_vector = np.array(
+        query_vector = np.array( 
             get_embeddings_with_retry(client, [format_query(query)])[0], dtype=np.float32
         )
         db_vectors = np.array(self.embeddings, dtype=np.float32)
